@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, FileText, Clock, Upload, Layout, Download, Trash2, LogOut, Sparkles, Edit3, X } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -7,6 +7,7 @@ import { useResume, defaultResume } from '@/context/ResumeContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useAuth } from '@/context/AuthContext';
 import { ResumePreview } from '@/components/resume/ResumePreview';
+import { downloadPDF, downloadPNG } from '@/lib/exportUtils';
 import { toast } from 'sonner';
 
 const Dashboard = () => {
@@ -18,6 +19,8 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const resumeRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }); };
 
@@ -77,6 +80,34 @@ const Dashboard = () => {
       toast.error('Failed to delete');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleExport = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const resume = savedResumes.find(r => r.id === id);
+    if (!resume) return;
+
+    setExportingId(id);
+    try {
+      const resumeElement = resumeRefs.current[id];
+      if (!resumeElement) {
+        toast.error('Resume preview not found');
+        return;
+      }
+
+      // Export as PDF by default
+      await downloadPDF(
+        { current: resumeElement },
+        `${resume.name || 'resume'}.pdf`,
+        'high'
+      );
+      toast.success('Resume exported as PDF!');
+    } catch (error) {
+      console.error('Export error:', error);
+      toast.error('Failed to export resume');
+    } finally {
+      setExportingId(null);
     }
   };
 
@@ -153,7 +184,7 @@ const Dashboard = () => {
           <motion.div
             initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
             whileHover={{ y: -4 }} onClick={() => navigate('/upload')}
-            className="relative cursor-pointer rounded-2xl border-2 border-border bg-card p-7 flex flex-col items-start gap-4 hover:border-accent/60 hover:bg-accent/5 transition-all shadow-sm hover:shadow-lg overflow-hidden"
+            className="relative cursor-pointer rounded-2xl border-2 border-accent/30 bg-gradient-to-br from-accent/5 to-orange-100/20 p-7 flex flex-col items-start gap-4 hover:border-accent/60 transition-all shadow-sm hover:shadow-lg overflow-hidden"
           >
             <div className="absolute top-0 right-0 w-32 h-32 bg-accent/5 rounded-full -translate-y-1/2 translate-x-1/2" />
             <div className="w-12 h-12 rounded-2xl bg-accent/15 flex items-center justify-center">
@@ -161,10 +192,10 @@ const Dashboard = () => {
             </div>
             <div>
               <h2 className="text-lg font-bold mb-1">Upload Existing Resume</h2>
-              <p className="text-sm text-muted-foreground">Upload your current resume, switch templates, edit sections, and enhance it with AI in seconds.</p>
+              <p className="text-sm text-muted-foreground">Upload your current resume, we'll extract all data with AI, choose a template, and refine it.</p>
             </div>
             <div className="flex flex-wrap gap-2 mt-1">
-              {['Upload File', 'Change Template', 'Edit & AI Polish', 'Export'].map((step, i) => (
+              {['Upload File', 'AI Extraction', 'Pick Template', 'Download'].map((step, i) => (
                 <span key={step} className="flex items-center gap-1.5 text-xs font-medium text-accent bg-accent/10 px-2.5 py-1 rounded-full">
                   <span className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center text-[10px] font-bold">{i + 1}</span>
                   {step}
@@ -206,6 +237,7 @@ const Dashboard = () => {
                     <div className="h-48 bg-white dark:bg-zinc-900 relative overflow-hidden border-b border-border">
                       {/* Scale the full 794px A4 resume down to fit the ~320px card width */}
                       <div
+                        ref={el => { if (el) resumeRefs.current[resume.id] = el; }}
                         style={{
                           position: 'absolute',
                           top: 0,
@@ -236,9 +268,10 @@ const Dashboard = () => {
                         </button>
                         <button
                           className="bg-card border border-border rounded-lg px-4 py-2 text-xs font-semibold hover:bg-muted transition-colors flex items-center gap-1.5"
-                          onClick={e => { e.stopPropagation(); }}
+                          onClick={e => handleExport(e, resume.id)}
+                          disabled={exportingId === resume.id}
                         >
-                          <Download className="h-3 w-3" /> Export
+                          <Download className="h-3 w-3" /> {exportingId === resume.id ? 'Exporting...' : 'Export'}
                         </button>
                         <button
                           className="bg-destructive/10 border border-destructive/30 text-destructive rounded-lg px-3 py-2 text-xs font-semibold hover:bg-destructive hover:text-white transition-colors flex items-center gap-1"

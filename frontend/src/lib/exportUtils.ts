@@ -1,6 +1,7 @@
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import type { RefObject } from 'react';
+import type { ResumeData } from '@/context/ResumeContext';
 
 export type ExportQuality = 'low' | 'medium' | 'high';
 
@@ -18,28 +19,95 @@ export const QUALITY_OPTIONS: QualityOption[] = [
   { key: 'high', label: 'High', dpi: '300 dpi', description: 'Professional print quality', scale: 4 },
 ];
 
-async function generateCanvas(el: HTMLElement, quality: ExportQuality) {
-  const option = QUALITY_OPTIONS.find(o => o.key === quality) || QUALITY_OPTIONS[1];
+/**
+ * Get resume rendered as HTML from backend
+ */
+export async function getResumeHTML(
+  resumeData: ResumeData,
+  templateConfig: Record<string, any>
+): Promise<string> {
+  try {
+    const response = await fetch('http://localhost:5000/api/export/render-html', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume: resumeData, template: templateConfig }),
+    });
+    if (!response.ok) throw new Error('Failed to render HTML');
+    const data = await response.json();
+    return data.html;
+  } catch (error) {
+    console.error('Backend HTML rendering failed, using DOM fallback:', error);
+    throw error;
+  }
+}
 
-  // Create a canvas with high scale for better quality
-  const canvas = await html2canvas(el, {
-    scale: option.scale,
-    useCORS: true,
-    allowTaint: true,
-    backgroundColor: '#ffffff',
-    logging: false,
-    onclone: (doc) => {
-      // Find the cloned element in the dummy document
-      const clonedEl = doc.getElementById(el.id) || doc.body.querySelector('[data-resume-preview]');
-      if (clonedEl instanceof HTMLElement) {
-        // IMPORTANT: Strip transforms from the clone so it captures at full size
-        clonedEl.style.transform = 'none';
-        clonedEl.style.width = '794px'; // Force A4 width in pixels at 96dpi
-        clonedEl.style.margin = '0';
-        clonedEl.style.padding = '0';
-      }
-    }
+/**
+ * Improved generateCanvas that properly handles A4 sizing with correct layout
+ */
+async function generateCanvas(el: HTMLElement, quality: ExportQuality): Promise<HTMLCanvasElement> {
+  const option = QUALITY_OPTIONS.find(o => o.key === quality) || QUALITY_OPTIONS[1];
+  const A4_WIDTH = 794;
+
+  // Create clean off-screen wrapper
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: -9999px;
+    width: ${A4_WIDTH}px;
+    transform: none !important;
+    z-index: -9999;
+    overflow: visible;
+    background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  `;
+
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.style.cssText = `
+    width: ${A4_WIDTH}px !important;
+    min-height: 1123px;
+    transform: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    position: relative !important;
+    background: #ffffff;
+    font-size: 11px !important;
+  `;
+
+  // Remove transforms and ensure visibility
+  clone.querySelectorAll<HTMLElement>('[style]').forEach(node => {
+    const style = node.getAttribute('style') || '';
+    node.setAttribute('style', 
+      style
+        .split(';')
+        .filter(s => !s.includes('transform') && !s.includes('scale'))
+        .join(';') + '; opacity: 1 !important;'
+    );
   });
+
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
+
+  // Wait for layout
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  let canvas: HTMLCanvasElement;
+  try {
+    canvas = await html2canvas(clone, {
+      scale: option.scale,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      width: A4_WIDTH,
+      windowWidth: A4_WIDTH,
+      windowHeight: Math.max(1123, clone.scrollHeight || 1123),
+    });
+  } finally {
+    document.body.removeChild(wrapper);
+  }
 
   return canvas;
 }
@@ -73,21 +141,26 @@ export async function downloadPDF(
     format: 'a4',
   });
 
-  const imgWidth = 210;
-  const pageHeight = 297;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-  let heightLeft = imgHeight;
-  let position = 0;
+  const pdfWidth = 210;   // mm
+  const pdfPageHeight = 297; // mm
 
-  pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-  heightLeft -= pageHeight;
+  // Calculate actual height based on canvas aspect ratio
+  // Canvas is A4_WIDTH (794px) wide
+  const canvasAspectRatio = canvas.height / canvas.width;
+  const imgHeightMm = pdfWidth * canvasAspectRatio;
 
-  // Handle multi-page
-  while (heightLeft >= 0) {
-    position = heightLeft - imgHeight;
+  // Add image to first page
+  pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, imgHeightMm, undefined, 'FAST');
+
+  // Add additional pages if resume is longer than one page
+  let heightLeft = imgHeightMm - pdfPageHeight;
+  let position = -pdfPageHeight;
+
+  while (heightLeft > 0) {
     pdf.addPage();
-    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-    heightLeft -= pageHeight;
+    pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, imgHeightMm, undefined, 'FAST');
+    heightLeft -= pdfPageHeight;
+    position -= pdfPageHeight;
   }
 
   pdf.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`);

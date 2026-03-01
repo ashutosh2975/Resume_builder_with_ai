@@ -6,6 +6,10 @@ import jwt
 import datetime
 import urllib.request
 import urllib.error
+import io
+import docx
+from pdfminer.high_level import extract_text as extract_pdf_text
+from groq import Groq
 from flask import Flask, request, jsonify, make_response
 from dotenv import load_dotenv
 from functools import wraps
@@ -76,10 +80,15 @@ else:
         return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
     def get_db():
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = _dict_factory
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            # ensure the directory exists (not usually needed for file in same folder)
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = _dict_factory
+            conn.execute("PRAGMA journal_mode=WAL")
+            return conn
+        except Exception as e:
+            print(f"[DB] failed to open sqlite database at {DB_PATH}: {e}")
+            raise
 
     def init_db():
         conn = get_db()
@@ -160,11 +169,303 @@ def q(sql):
     return sql
 
 
+# ─── Resume Extraction Functions ──────────────────────────────────────────────
+
+def manual_extract_resume(text: str) -> dict:
+    """
+    Fallback manual extraction using regex patterns.
+    Returns structured resume data when AI extraction fails.
+    """
+    lines = text.split('\n')
+    
+    # Extract contact info
+    email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', text)
+    phone_match = re.search(r'(\+?[\d\s\-\(\).]{7,20})', text)
+    linkedin_match = re.search(r'linkedin\.com/in/[\w-]+', text)
+    
+    # Basic name extraction - usually first line
+    name = ""
+    for line in lines[:5]:
+        line_clean = line.strip()
+        if line_clean and len(line_clean) < 60 and not re.search(r'[@|•]', line):
+            name = line_clean
+            break
+    
+    # Extract sections using regex
+    def extract_section(pattern_keywords: list) -> str:
+        """Extract section content between headers"""
+        for i, line in enumerate(lines):
+            if any(kw.lower() in line.lower() for kw in pattern_keywords):
+                start = i + 1
+                end = len(lines)
+                for j in range(i + 1, len(lines)):
+                    if any(kw.lower() in lines[j].lower() for kw in ['experience', 'education', 'skills', 'projects', 'summary']):
+                        end = j
+                        break
+                return '\n'.join(lines[start:end])
+        return ""
+    
+    # Extract experience entries
+    experience = []
+    exp_section = extract_section(['experience', 'work', 'professional'])
+    if exp_section:
+        # Split by company names and positions
+        entries = re.split(r'\n(?=[A-Z][a-z\s]+(?:Engineer|Developer|Manager|Designer|Analyst|Architect|Manager))', exp_section)
+        for entry in entries[:5]:  # Limit to 5 jobs
+            if entry.strip():
+                entry_lines = entry.strip().split('\n')
+                if entry_lines:
+                    experience.append({
+                        "id": str(len(experience)),
+                        "company": entry_lines[0].split('|')[0].strip() if '|' in entry_lines[0] else entry_lines[0][:30],
+                        "position": entry_lines[0][:40],
+                        "startDate": "",
+                        "endDate": "",
+                        "description": '\n'.join(entry_lines[1:])[:500]
+                    })
+    
+    # Extract education
+    education = []
+    edu_section = extract_section(['education', 'academic', 'university', 'college'])
+    if edu_section:
+        entries = re.split(r'\n(?=[A-Z])', edu_section)
+        for entry in entries[:3]:  # Limit to 3 education entries
+            if entry.strip() and any(kw in entry.lower() for kw in ['degree', 'bachelor', 'master', 'phd', 'university', 'college']):
+                education.append({
+                    "id": str(len(education)),
+                    "school": entry.split('|')[0].strip() if '|' in entry else entry[:50],
+                    "degree": "Degree" if not re.search(r'bachelor|master|phd|associate', entry, re.I) else re.search(r'bachelor|master|phd|associate', entry, re.I).group(0).title(),
+                    "field": "",
+                    "startDate": "",
+                    "endDate": ""
+                })
+    
+    # Extract skills
+    skills = []
+    skills_section = extract_section(['skills', 'technical', 'competencies'])
+    if skills_section:
+        skill_list = re.split(r'[,•\n]', skills_section)
+        skills = [s.strip() for s in skill_list if s.strip() and len(s.strip()) < 50][:20]
+    
+    # Extract projects
+    projects = []
+    proj_section = extract_section(['projects', 'portfolio', 'notable'])
+    if proj_section:
+        entries = re.split(r'\n(?=[A-Z])', proj_section)
+        for entry in entries[:3]:  # Limit to 3 projects
+            if entry.strip():
+                entry_lines = entry.strip().split('\n')
+                if entry_lines:
+                    projects.append({
+                        "id": str(len(projects)),
+                        "name": entry_lines[0][:60],
+                        "role": "Developer",
+                        "url": "",
+                        "startDate": "",
+                        "endDate": "",
+                        "description": '\n'.join(entry_lines[1:])[:300]
+                    })
+    
+    return {
+        "personalInfo": {
+            "fullName": name,
+            "email": email_match.group(0) if email_match else "",
+            "phone": phone_match.group(0).strip() if phone_match else "",
+            "location": "",
+            "title": "",
+            "website": "",
+            "linkedin": linkedin_match.group(0) if linkedin_match else "",
+            "photo": ""
+        },
+        "summary": extract_section(['summary', 'objective', 'profile'])[:500],
+        "experience": experience,
+        "education": education,
+        "projects": projects,
+        "skills": skills,
+        "languages": [],
+        "certifications": []
+    }
+
+
+def extract_with_groq(text: str) -> dict | None:
+    """
+    Try to extract resume using GROQ API (free, unlimited).
+    Returns None if extraction fails, falls back to manual extraction.
+    """
+    if not GROQ_API_KEY:
+        return None
+    
+    try:
+        prompt = f"""Extract resume information from the following text and return as JSON.
+Return ONLY valid JSON with this exact structure:
+{{
+  "personalInfo": {{
+    "fullName": "string",
+    "email": "string", 
+    "phone": "string",
+    "location": "string",
+    "title": "string",
+    "website": "string",
+    "linkedin": "string"
+  }},
+  "summary": "string (max 300 chars)",
+  "experience": [
+    {{"company": "string", "position": "string", "startDate": "string", "endDate": "string", "description": "string"}},
+  ],
+  "education": [
+    {{"school": "string", "degree": "string", "field": "string", "startDate": "string", "endDate": "string"}},
+  ],
+  "projects": [
+    {{"name": "string", "role": "string", "description": "string", "startDate": "string", "endDate": "string"}},
+  ],
+  "skills": ["skill1", "skill2"]
+}}
+
+Resume text:
+{text[:8000]}
+
+Return ONLY the JSON object, no markdown or explanations."""
+
+        client = Groq(api_key=GROQ_API_KEY)
+        message = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2048
+        )
+        
+        response_text = message.choices[0].message.content
+        
+        # Clean markdown if present
+        response_text = re.sub(r"```json", "", response_text)
+        response_text = re.sub(r"```", "", response_text).strip()
+        
+        extracted = json.loads(response_text)
+        
+        # Ensure required structure
+        if "personalInfo" in extracted and "skills" in extracted:
+            # Add IDs and ensure all fields exist
+            for i, exp in enumerate(extracted.get("experience", [])):
+                exp["id"] = str(i)
+            for i, edu in enumerate(extracted.get("education", [])):
+                edu["id"] = str(i)
+            for i, proj in enumerate(extracted.get("projects", [])):
+                proj["id"] = str(i)
+                proj["startDate"] = proj.get("startDate", "")
+                proj["endDate"] = proj.get("endDate", "")
+                proj["url"] = ""  # Add url field
+                
+            return extracted
+    except Exception as e:
+        print(f"[Extract] GROQ extraction failed: {e}")
+    
+    return None
+
+
+def extract_with_gemini(text: str) -> dict | None:
+    """
+    Try to extract resume using Gemini API.
+    Returns None if extraction fails, falls back to manual extraction.
+    """
+    if not GEMINI_API_KEY:
+        return None
+    
+    try:
+        prompt = f"""Extract resume information from the following text and return as JSON.
+Return ONLY valid JSON with this exact structure:
+{{
+  "personalInfo": {{
+    "fullName": "string",
+    "email": "string", 
+    "phone": "string",
+    "location": "string",
+    "title": "string",
+    "website": "string",
+    "linkedin": "string"
+  }},
+  "summary": "string (max 300 chars)",
+  "experience": [
+    {{"company": "string", "position": "string", "startDate": "string", "endDate": "string", "description": "string"}},
+  ],
+  "education": [
+    {{"school": "string", "degree": "string", "field": "string", "startDate": "string", "endDate": "string"}},
+  ],
+  "projects": [
+    {{"name": "string", "role": "string", "description": "string", "startDate": "string", "endDate": "string"}},
+  ],
+  "skills": ["skill1", "skill2"]
+}}
+
+Resume text:
+{text[:8000]}
+
+Return ONLY the JSON object, no markdown or explanations."""
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}
+        }
+        
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            response_text = result["candidates"][0]["content"]["parts"][0]["text"]
+            
+            # Clean markdown if present
+            response_text = re.sub(r"```json", "", response_text)
+            response_text = re.sub(r"```", "", response_text).strip()
+            
+            extracted = json.loads(response_text)
+            
+            # Ensure required structure
+            if "personalInfo" in extracted and "skills" in extracted:
+                # Add IDs and ensure all fields exist
+                for i, exp in enumerate(extracted.get("experience", [])):
+                    exp["id"] = str(i)
+                for i, edu in enumerate(extracted.get("education", [])):
+                    edu["id"] = str(i)
+                for i, proj in enumerate(extracted.get("projects", [])):
+                    proj["id"] = str(i)
+                    proj["startDate"] = proj.get("startDate", "")
+                    proj["endDate"] = proj.get("endDate", "")
+                    proj["url"] = ""  # Add url field
+                    
+                return extracted
+    except Exception as e:
+        print(f"[Extract] Gemini extraction failed: {e}")
+    
+    return None
+
+
 # ─── Health ───────────────────────────────────────────────────────────────────
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "ResumeForge API 🚀", "database": "PostgreSQL" if USE_POSTGRES else "SQLite"})
+    # simple DB ping to detect connectivity issues
+    db_status = "unknown"
+    try:
+        conn = get_db()
+        if USE_POSTGRES:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        else:
+            conn.execute("SELECT 1")
+        conn.close()
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"error: {e}"
+        print(f"[Health] DB ping failed: {e}")
+
+    return jsonify({
+        "status": "ok",
+        "message": "ResumeForge API 🚀",
+        "database": "PostgreSQL" if USE_POSTGRES else "SQLite",
+        "dbStatus": db_status,
+    })
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -374,6 +675,7 @@ def delete_resume(payload, resume_id):
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 MODE_PROMPTS = {
     "improve":    "You are a professional resume writer. Improve the grammar, clarity, and professional tone of this resume text. Keep the same facts, just make it sound more polished and impactful. Return ONLY the improved text, no explanations.",
@@ -451,6 +753,91 @@ def _try_openai(text: str, mode: str) -> str | None:
         return None
 
 
+def _try_groq(text: str, mode: str) -> str | None:
+    """Try GROQ API — fast and free alternative for AI enhancement."""
+    if not GROQ_API_KEY:
+        return None
+    try:
+        prompt = f"{MODE_PROMPTS.get(mode, MODE_PROMPTS['improve'])}\n\nText to enhance:\n{text}"
+        
+        client = Groq(api_key=GROQ_API_KEY)
+        message = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1024
+        )
+        
+        return message.choices[0].message.content.strip()
+    except Exception as exc:
+        print(f"[AI] GROQ failed: {exc}")
+        return None
+
+# ─── Resume Parsing/Extraction ────────────────────────────────────────────────
+
+@app.route("/api/ai/parse-resume", methods=["POST"])
+def parse_resume():
+    """
+    Extract resume data from uploaded file using GROQ AI first (free, unlimited),
+    then Gemini if needed, fallback to manual extraction.
+    Returns: {result: resume_data, method: "ai" | "manual"}
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "No file selected"}), 400
+    
+    # Extract text from file
+    text = ""
+    try:
+        content = file.read()
+        ext = file.filename.split('.')[-1].lower()
+        
+        if ext == 'pdf':
+            text = extract_pdf_text(io.BytesIO(content))
+        elif ext == 'docx':
+            doc = docx.Document(io.BytesIO(content))
+            text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        elif ext == 'txt':
+            text = content.decode('utf-8', errors='ignore')
+        else:
+            return jsonify({"error": "Unsupported file format. Please upload PDF, DOCX, or TXT."}), 400
+    
+    except Exception as e:
+        print(f"[Parse] Error extracting text: {e}")
+        return jsonify({"error": "Failed to read file"}), 500
+    
+    if not text.strip():
+        return jsonify({"error": "File is empty or unreadable"}), 400
+    
+    # Try GROQ extraction first (free, unlimited)
+    print(f"[Parse] Attempting GROQ extraction...")
+    result = extract_with_groq(text)
+    
+    if result:
+        print(f"[Parse] Success with GROQ AI")
+        return jsonify({"result": result, "method": "ai", "success": True})
+    
+    # Fallback to Gemini if GROQ fails
+    print(f"[Parse] GROQ failed, trying Gemini extraction...")
+    result = extract_with_gemini(text)
+    
+    if result:
+        print(f"[Parse] Success with Gemini AI")
+        return jsonify({"result": result, "method": "ai", "success": True})
+    
+    # Final fallback to manual extraction
+    print(f"[Parse] AI methods failed, falling back to manual extraction...")
+    try:
+        result = manual_extract_resume(text)
+        print(f"[Parse] Manual extraction complete")
+        return jsonify({"result": result, "method": "manual", "success": True})
+    except Exception as e:
+        print(f"[Parse] Manual extraction failed: {e}")
+        return jsonify({"error": "Failed to extract resume data", "method": "manual", "success": False}), 500
+
 @app.route("/api/ai/enhance", methods=["POST"])
 def ai_enhance():
     """Public AI proxy — no auth required so guests can also use AI."""
@@ -465,12 +852,196 @@ def ai_enhance():
     if len(text) > 8000:
         return jsonify({"error": "text too long (max 8000 chars)"}), 400
 
-    # Try AI providers in order of preference (free → paid fallback)
-    result = _try_gemini(text, mode) or _try_deepseek(text, mode) or _try_openai(text, mode)
+    # Try AI providers in order: GROQ (fast/free) → Gemini (free) → DeepSeek → OpenAI
+    result = _try_groq(text, mode) or _try_gemini(text, mode) or _try_deepseek(text, mode) or _try_openai(text, mode)
 
     if result:
         return jsonify({"result": result, "provider": "ai"})
     return jsonify({"result": None, "provider": "none"}), 503
+
+
+# ─── AI Resume Suggestions ────────────────────────────────────────────────────
+
+@app.route("/api/ai/suggest", methods=["POST"])
+def ai_suggest():
+    """
+    Takes a parsed resume JSON and returns AI-powered improvement suggestions.
+    No auth required — works for all users.
+    """
+    data   = request.get_json(silent=True) or {}
+    resume = data.get("resume") or {}
+
+    if not resume:
+        return jsonify({"error": "resume data is required"}), 400
+
+    # Build a compact text summary of the resume to send to AI
+    lines = []
+    pi = resume.get("personalInfo", {})
+    if pi.get("fullName"):  lines.append(f"Name: {pi['fullName']}")
+    if pi.get("title"):     lines.append(f"Title: {pi['title']}")
+    if resume.get("summary"):
+        lines.append(f"Summary: {resume['summary'][:300]}")
+    exp_list = resume.get("experience", [])
+    for e in exp_list[:3]:
+        lines.append(f"Experience: {e.get('position','')} at {e.get('company','')} ({e.get('startDate','')}–{e.get('endDate','')})")
+        if e.get("description"):
+            lines.append(f"  Bullets: {e['description'][:200]}")
+    edu_list = resume.get("education", [])
+    for ed in edu_list[:2]:
+        lines.append(f"Education: {ed.get('degree','')} {ed.get('field','')} at {ed.get('school','')}")
+    skills = resume.get("skills", [])
+    if skills:
+        lines.append(f"Skills: {', '.join(skills[:20])}")
+    proj_list = resume.get("projects", [])
+    for p in proj_list[:2]:
+        lines.append(f"Project: {p.get('name','')} — {p.get('description','')[:150]}")
+
+    resume_text = "\n".join(lines)
+
+    prompt = f"""You are an expert resume coach and career counselor. Analyze the following resume and provide exactly 5 concise, actionable improvement suggestions.
+
+Resume:
+{resume_text}
+
+Instructions:
+- Each suggestion must be specific and immediately actionable.
+- Cover areas like: weak bullet points, missing quantification, ATS keywords, summary quality, gaps, or missing sections.
+- Format your response as a valid JSON array of exactly 5 objects, each with these fields:
+  - "category": one of "Summary", "Experience", "Skills", "ATS", "Format", "Projects", "Education", "Missing"
+  - "title": short title (max 6 words)
+  - "suggestion": actionable advice (1-2 sentences, specific)
+  - "priority": "high", "medium", or "low"
+
+Return ONLY the JSON array, no other text, no markdown fences.
+"""
+
+    def _suggest_groq():
+        if not GROQ_API_KEY: return None
+        body = {
+            "model": "mixtral-8x7b-32768",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.4,
+            "max_tokens": 1024,
+        }
+        resp = _post_json(
+            "https://api.groq.com/openai/v1/chat/completions",
+            {"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+            body,
+        )
+        return resp["choices"][0]["message"]["content"].strip()
+
+    def _suggest_gemini():
+        if not GEMINI_API_KEY: return None
+        url  = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}}
+        resp = _post_json(url, {"Content-Type": "application/json"}, body)
+        return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    def _suggest_openai():
+        if not OPENAI_API_KEY: return None
+        body = {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.4, "max_tokens": 1024,
+        }
+        resp = _post_json(
+            "https://api.openai.com/v1/chat/completions",
+            {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"},
+            body,
+        )
+        return resp["choices"][0]["message"]["content"].strip()
+
+    try:
+        raw = None
+        # Try GROQ first (fastest + free)
+        try:
+            raw = _suggest_groq()
+        except Exception as groq_err:
+            print(f"[Suggest] GROQ failed: {groq_err}")
+            # Fallback to Gemini
+            try:
+                raw = _suggest_gemini()
+            except Exception as ge:
+                print(f"[Suggest] Gemini failed: {ge}")
+                # Final fallback to OpenAI
+                try:
+                    raw = _suggest_openai()
+                except Exception as oe:
+                    print(f"[Suggest] OpenAI also failed: {oe}")
+
+        if not raw:
+            return jsonify({"suggestions": [], "provider": "none"}), 503
+
+        # Clean markdown fences
+        raw = re.sub(r"```(json)?", "", raw).strip()
+        start = raw.find("[")
+        end   = raw.rfind("]")
+        if start != -1 and end != -1:
+            raw = raw[start:end+1]
+
+        suggestions = json.loads(raw)
+        return jsonify({"suggestions": suggestions, "provider": "ai"})
+
+    except Exception as e:
+        print(f"[Suggest] Failed: {e}")
+        return jsonify({"suggestions": [], "provider": "error"}), 500
+
+
+# ─── Gemini AI Enhancement (Direct) ───────────────────────────────────────────
+
+# ─── Skill Suggestions via GROQ ──────────────────────────────────────────────
+
+@app.route("/api/ai/skill-suggestions", methods=["POST"])
+def ai_skill_suggestions():
+    """
+    Generate skill suggestions based on partial input.
+    Uses GROQ to provide intelligent suggestions related to the input text.
+    No auth required — works for all users.
+    """
+    data = request.get_json(silent=True) or {}
+    input_text = (data.get("input") or "").strip()
+
+    if not input_text or len(input_text) < 2:
+        return jsonify({"suggestions": []})
+    if len(input_text) > 500:
+        return jsonify({"error": "input too long (max 500 chars)"}), 400
+
+    prompt = f"""You are a resume expert. Given a partial skill or technology name, suggest up to 8 similar or related professional skills that would be valuable on a technical resume.
+
+Input: {input_text}
+
+Instructions:
+- Return ONLY a JSON array of exactly 8 (or fewer if less applicable) skill suggestions as strings.
+- Skills should be professional and resume-appropriate.
+- No duplicates.
+- Return ONLY the JSON array, no markdown, no explanation.
+
+Example format:
+["Python", "Java", "C++", "Go", "Rust", "TypeScript", "JavaScript", "Kotlin"]
+"""
+
+    try:
+        # Use GROQ for fast skill suggestions
+        result = _try_groq(input_text, "improve", prompt)
+        if result:
+            # Extract JSON array from result
+            start = result.find("[")
+            end = result.rfind("]")
+            if start != -1 and end != -1:
+                try:
+                    raw = result[start:end+1]
+                    suggestions = json.loads(raw)
+                    if isinstance(suggestions, list):
+                        return jsonify({"suggestions": suggestions[:8], "provider": "groq"})
+                except:
+                    pass
+        
+        # Fallback: return empty if GROQ fails
+        return jsonify({"suggestions": [], "provider": "none"})
+    
+    except Exception as e:
+        print(f"[Skills] Suggestions failed: {e}")
+        return jsonify({"suggestions": [], "provider": "error"}), 500
 
 
 # ─── University / College Autocomplete ────────────────────────────────────────

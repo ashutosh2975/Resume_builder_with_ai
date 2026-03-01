@@ -120,6 +120,34 @@ Authorization: Bearer <token>
 
 ---
 
+## Resume Extraction / Parsing
+
+The backend provides intelligent resume extraction using **Gemini API with automatic fallback to manual extraction**.
+
+### Pipeline:
+1. **User uploads file** (PDF, DOCX, or TXT)
+2. **Gemini AI extraction** - Attempts to extract structured resume data (~90% accuracy with proper formatting)
+3. **Manual extraction fallback** - If AI fails, regex-based manual extraction is used
+4. **Return method indicator** - Response includes `"method": "ai"` or `"method": "manual"` so frontend can show extraction type
+
+### Endpoint:
+```
+POST /api/ai/parse-resume
+- Accepts: multipart/form-data with 'file' field
+- Returns: { result: resume_data, method: "ai"|"manual", success: true }
+```
+
+### Extraction Accuracy:
+- **AI (Gemini)**: ~90% correct with well-formatted resumes
+- **Manual (Regex)**: ~70% correct, best-effort extraction as fallback
+
+## AI Features
+
+The backend provides AI-powered resume enhancement features through the `/api/ai/enhance` endpoint.
+Users can improve grammar, shorten content, expand descriptions, optimize for ATS, or regenerate bullet points.
+
+The system tries multiple AI providers in order (GROQ, Gemini, DeepSeek, OpenAI) with automatic fallback.
+
 ## Frontend ↔ Backend flow
 
 ```

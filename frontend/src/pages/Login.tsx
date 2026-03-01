@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 const Login: React.FC = () => {
-    const { login } = useAuth();
+    const { login, backendOnline } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
     const from = (location.state as any)?.from?.pathname || "/dashboard";
@@ -99,6 +99,20 @@ const Login: React.FC = () => {
                     <h1 className="text-3xl font-extrabold mb-1">Welcome back</h1>
                     <p className="text-muted-foreground mb-8">Sign in to continue building your career.</p>
 
+                    {/* Backend offline warning */}
+                    <AnimatePresence>
+                        {!backendOnline && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -8 }}
+                                className="flex items-center gap-2 bg-yellow-100 border border-yellow-300 text-yellow-800 text-sm rounded-xl px-4 py-3 mb-6"
+                            >
+                                <AlertCircle className="w-4 h-4 shrink-0" />
+                                Backend server is unreachable. Please start the API on <code>localhost:5000</code> before logging in.
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
                     {/* Error banner */}
                     <AnimatePresence>
                         {error && (

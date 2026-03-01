@@ -39,9 +39,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
     });
     const [isLoading, setIsLoading] = useState(false);
+    const [backendOnline, setBackendOnline] = useState(true);
 
-    // On mount: verify stored token is still valid
+    // On mount: verify backend/health and stored token
     useEffect(() => {
+        // ping health to detect if server is running
+        fetch(`${API_BASE}/health`)
+            .then((r) => {
+                if (!r.ok) throw new Error("down");
+                setBackendOnline(true);
+            })
+            .catch(() => {
+                setBackendOnline(false);
+            });
+
         if (!token) return;
         setIsLoading(true);
         fetch(`${API_BASE}/auth/me`, {
@@ -72,33 +83,49 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
 
     const login = async (email: string, password: string) => {
-        const res = await fetch(`${API_BASE}/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email, password }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Login failed.");
-        persist(data.token, data.user);
+        try {
+            const res = await fetch(`${API_BASE}/auth/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email, password }),
+            });
+            // network error will throw before we get here
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Login failed.");
+            persist(data.token, data.user);
+        } catch (err: any) {
+            if (err instanceof TypeError) {
+                // fetch failed to reach server (CORS, network down, server stopped)
+                throw new Error("Unable to contact backend API. Is the server running on http://localhost:5000?");
+            }
+            throw err;
+        }
     };
 
     const register = async (full_name: string, email: string, password: string) => {
-        const res = await fetch(`${API_BASE}/auth/register`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ full_name, email, password }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            // Propagate field-level validation errors
-            if (data.errors) {
-                const err: any = new Error("Validation failed");
-                err.fields = data.errors;
-                throw err;
+        try {
+            const res = await fetch(`${API_BASE}/auth/register`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ full_name, email, password }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                // Propagate field-level validation errors
+                if (data.errors) {
+                    const err: any = new Error("Validation failed");
+                    err.fields = data.errors;
+                    throw err;
+                }
+                throw new Error(data.error || "Registration failed.");
             }
-            throw new Error(data.error || "Registration failed.");
+            persist(data.token, data.user);
+        } catch (err: any) {
+            if (err instanceof TypeError) {
+                throw new Error("Unable to contact backend API. Is the server running on http://localhost:5000?");
+            }
+            throw err;
         }
-        persist(data.token, data.user);
     };
 
     const logout = () => {
@@ -111,6 +138,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return (
         <AuthContext.Provider value={{
             user, token, isLoading,
+            backendOnline,
             isAuthenticated: !!token && !!user,
             login, register, logout,
         }}>

@@ -139,7 +139,15 @@ function ContactRow({ email, phone, location, website, linkedin, small = false }
 
 function ResumeHeader({ data, template }: { data: ResumeData; template: ReturnType<typeof getTemplate> }) {
     const { fullName, title, email, phone, location, website, linkedin, photo } = data.personalInfo;
+    const photoPos = data.photoPosition ?? 'center';
     const ac = template.accentColor;
+
+    // Helper to get photo alignment
+    const getPhotoAlignment = () => {
+        if (photoPos === 'left') return 'flex-start';
+        if (photoPos === 'right') return 'flex-end';
+        return 'center'; // center
+    };
 
     if (template.headerStyle === 'banner') {
         return (
@@ -165,7 +173,7 @@ function ResumeHeader({ data, template }: { data: ResumeData; template: ReturnTy
     if (template.headerStyle === 'centered') {
         return (
             <div className="text-center pb-4 mb-4" style={{ borderBottom: `2px solid ${ac}` }}>
-                {photo && <div className="flex justify-center mb-3"><PhotoCircle src={photo} size={72} ac={ac} /></div>}
+                {photo && <div style={{ display: 'flex', justifyContent: getPhotoAlignment(), marginBottom: '12px' }}><PhotoCircle src={photo} size={72} ac={ac} /></div>}
                 <h2 className="text-2xl font-bold text-gray-900">{fullName || 'Your Name'}</h2>
                 <p className="text-sm font-medium mt-0.5" style={{ color: ac }}>{title || 'Job Title'}</p>
                 <div className="flex flex-wrap justify-center gap-3 mt-2 text-xs text-gray-500">
@@ -180,6 +188,31 @@ function ResumeHeader({ data, template }: { data: ResumeData; template: ReturnTy
     }
 
     if (template.headerStyle === 'bold') {
+        const isCentered = photoPos === 'center';
+        const isRight = photoPos === 'right';
+        
+        if (isCentered || isRight) {
+            // When centered or right, show photo above text
+            return (
+                <div className="pb-4 mb-4">
+                    {photo && <div style={{ display: 'flex', justifyContent: getPhotoAlignment(), marginBottom: '12px' }}><PhotoCircle src={photo} size={68} ac={ac} /></div>}
+                    <div style={{ textAlign: photoPos === 'center' ? 'center' : 'right' }}>
+                        <h2 className="text-3xl font-black tracking-tight text-gray-900">{fullName || 'Your Name'}</h2>
+                        <p className="text-base font-semibold mt-0.5" style={{ color: ac }}>{title || 'Job Title'}</p>
+                        <div className={`flex flex-wrap gap-3 mt-2 text-xs text-gray-500 ${photoPos === 'center' ? 'justify-center' : 'justify-end'}`}>
+                            {email && <span className="flex items-center gap-1"><Mail size={10} />{email}</span>}
+                            {phone && <span className="flex items-center gap-1"><Phone size={10} />{phone}</span>}
+                            {location && <span className="flex items-center gap-1"><MapPin size={10} />{location}</span>}
+                            {website && <span className="flex items-center gap-1"><Globe size={10} />{website}</span>}
+                            {linkedin && <span className="flex items-center gap-1"><Linkedin size={10} />{linkedin}</span>}
+                        </div>
+                    </div>
+                    <div className="h-1 mt-3 rounded-full" style={{ background: `linear-gradient(to right, ${ac}, transparent)` }} />
+                </div>
+            );
+        }
+        
+        // Left (default)
         return (
             <div className="pb-4 mb-4">
                 <div className="flex items-start justify-between gap-4">
@@ -333,6 +366,44 @@ function MainContent({ data, template, sectionOrder }: { data: ResumeData; templ
                                 <p className="text-xs" style={{ color: ac }}>{edu.school}</p>
                             </div>
                             <span className="text-xs text-gray-400 whitespace-nowrap shrink-0 ml-2">{edu.startDate}{edu.endDate ? ` – ${edu.endDate}` : ''}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        ) : null,
+
+        extracurricular: (data.extracurricular ?? []).length > 0 ? (
+            <div key="extracurricular">
+                <SectionHeading label="Extracurricular" accentColor={ac} style={ss} />
+                <div className="space-y-3">
+                    {(data.extracurricular ?? []).map((ec) => (
+                        <div key={ec.id}>
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-xs font-semibold text-gray-800">{ec.title || 'Activity'}</p>
+                                    <p className="text-xs font-medium" style={{ color: ac }}>{ec.organization || 'Organization'}</p>
+                                    {ec.role && <p className="text-xs text-gray-600">{ec.role}</p>}
+                                </div>
+                                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0 ml-2">{ec.startDate}{ec.endDate ? ` – ${ec.endDate}` : ''}</span>
+                            </div>
+                            {ec.description && (
+                                <div className="mt-1">
+                                    {ec.description.split('\n').filter(Boolean).map((line, i) => (
+                                        <p key={i} className="text-xs text-gray-600 flex items-start gap-1.5 leading-relaxed">
+                                            <span style={{ color: ac }} className="mt-0.5 shrink-0">▸</span>
+                                            <span>{line.replace(/^[•▸\-]\s*/, '')}</span>
+                                        </p>
+                                    ))}
+                                </div>
+                            )}
+                            {ec.link && (
+                                <div className="mt-1">
+                                    <a href={ec.link} target="_blank" rel="noreferrer" className="text-xs flex items-center gap-1" style={{ color: ac }}>
+                                        <ExternalLink size={9} />
+                                        {ec.link}
+                                    </a>
+                                </div>
+                            )}
                         </div>
                     ))}
                 </div>

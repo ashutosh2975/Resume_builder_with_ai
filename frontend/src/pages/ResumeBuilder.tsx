@@ -50,6 +50,7 @@ const SECTION_META: Record<string, { label: string; icon: React.ComponentType<{ 
   experience: { label: 'Experience', icon: Briefcase },
   projects: { label: 'Projects', icon: FolderOpen },
   education: { label: 'Education', icon: GraduationCap },
+  extracurricular: { label: 'Extracurricular', icon: Sparkles },
   skills: { label: 'Skills', icon: Wrench },
 };
 
@@ -73,7 +74,7 @@ export default function ResumeBuilder() {
   const [newSkill, setNewSkill] = useState('');
   const [showTemplateSwitcher, setShowTemplateSwitcher] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
-    personal: true, summary: false, experience: false, projects: false, education: false, skills: false,
+    personal: true, summary: false, experience: false, projects: false, education: false, extracurricular: false, skills: false,
   });
   const [aiLoading, setAiLoading] = useState<AILoadingState>({});
   const [exportLoading, setExportLoading] = useState<'pdf' | 'png' | null>(null);
@@ -82,33 +83,67 @@ export default function ResumeBuilder() {
   const [exportQuality, setExportQuality] = useState<ExportQuality>('high');
   const [countryCode, setCountryCode] = useState('+1');
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  // ─── Preview Scaling & Refs ─────────────────────────────────────────────
+  const containerRef = useRef<HTMLDivElement>(null);
+  const previewInnerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.8);
+
   const previewRef = useRef<HTMLDivElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFirstRender = useRef(true);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    function updateScale() {
+      const container = containerRef.current;
+      const inner = previewInnerRef.current;
+      if (!container || !inner) return;
+
+      const paneW = container.offsetWidth;
+      const usableW = Math.min(paneW - 48, 620);
+      const s = usableW / 794;
+      setScale(s);
+
+      const wrapper = inner.parentElement;
+      if (wrapper) {
+        wrapper.style.height = `${inner.scrollHeight * s}px`;
+        wrapper.style.width = `${794 * s}px`;
+      }
+    }
+
+    updateScale();
+    const ro = new ResizeObserver(updateScale);
+    ro.observe(container);
+    if (previewInnerRef.current) ro.observe(previewInnerRef.current);
+
+    window.addEventListener('resize', updateScale);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', updateScale);
+    };
+  }, []);
+
   // ─── Auto-save ───────────────────────────────────────────────────────────
   useEffect(() => {
-    // skip the very first mount (avoids saving stale initial state)
     if (isFirstRender.current) { isFirstRender.current = false; return; }
     if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
     setAutoSaveStatus('saving');
     autoSaveRef.current = setTimeout(async () => {
-      // always persist to localStorage immediately
       localStorage.setItem('resumeData', JSON.stringify(resumeData));
       localStorage.setItem('selectedTemplate', selectedTemplate);
-      // try account save silently
       try {
         await saveResumeToAccount(
           resumeData.personalInfo.fullName ? `${resumeData.personalInfo.fullName}'s Resume` : 'Untitled Resume',
         );
-      } catch { /* no token / offline — that's fine */ }
+      } catch { /* ignored */ }
       setAutoSaveStatus('saved');
-      // reset after 2.5 s
       setTimeout(() => setAutoSaveStatus('idle'), 2500);
     }, 3000);
     return () => { if (autoSaveRef.current) clearTimeout(autoSaveRef.current); };
-  }, [resumeData, selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resumeData, selectedTemplate]);
 
   // ─── Project CRUD ────────────────────────────────────────────────────────
   const addProject = () => {
@@ -116,7 +151,7 @@ export default function ResumeBuilder() {
     setResumeData(p => ({
       ...p,
       projects: [...(p.projects ?? []), {
-        id, name: '', role: '', url: '',
+        id, name: '', role: '', url: '', link: '',
         startDate: '', endDate: '', description: '',
       }],
     }));
@@ -156,7 +191,7 @@ export default function ResumeBuilder() {
     const id = Date.now().toString();
     setResumeData(p => ({
       ...p,
-      education: [...p.education, { id, school: '', degree: '', field: '', startDate: '', endDate: '' }],
+      education: [...p.education, { id, school: '', degree: '', field: '', startDate: '', endDate: '', link: '' }],
     }));
     setExpandedSections(s => ({ ...s, education: true }));
     setTimeout(() => {
@@ -174,7 +209,7 @@ export default function ResumeBuilder() {
     const id = Date.now().toString();
     setResumeData(p => ({
       ...p,
-      experience: [...p.experience, { id, company: '', position: '', startDate: '', endDate: '', description: '' }],
+      experience: [...p.experience, { id, company: '', position: '', startDate: '', endDate: '', description: '', link: '' }],
     }));
     setExpandedSections(s => ({ ...s, experience: true }));
     setTimeout(() => {
@@ -187,6 +222,24 @@ export default function ResumeBuilder() {
 
   const removeExperience = (id: string) =>
     setResumeData(p => ({ ...p, experience: p.experience.filter(e => e.id !== id) }));
+
+  const addExtracurricular = () => {
+    const id = Date.now().toString();
+    setResumeData(p => ({
+      ...p,
+      extracurricular: [...(p.extracurricular ?? []), { id, title: '', organization: '', role: '', startDate: '', endDate: '', description: '', link: '' }],
+    }));
+    setExpandedSections(s => ({ ...s, extracurricular: true }));
+    setTimeout(() => {
+      document.getElementById(`extracurricular-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+  };
+
+  const updateExtracurricular = (id: string, field: string, value: string) =>
+    setResumeData(p => ({ ...p, extracurricular: (p.extracurricular ?? []).map(ec => ec.id === id ? { ...ec, [field]: value } : ec) }));
+
+  const removeExtracurricular = (id: string) =>
+    setResumeData(p => ({ ...p, extracurricular: (p.extracurricular ?? []).filter(ec => ec.id !== id) }));
 
   const addSkill = () => {
     if (newSkill.trim() && !resumeData.skills.includes(newSkill.trim())) {
@@ -300,6 +353,8 @@ export default function ResumeBuilder() {
           { field: 'location', label: 'Location', placeholder: 'San Francisco, CA' },
           { field: 'website', label: 'Website / Portfolio', placeholder: 'yoursite.com' },
           { field: 'linkedin', label: 'LinkedIn', placeholder: 'linkedin.com/in/yourname' },
+          { field: 'github', label: 'GitHub', placeholder: 'github.com/yourname' },
+          { field: 'portfolio', label: 'Portfolio', placeholder: 'yourportfolio.com' },
         ].map(({ field, label, placeholder, type }) => (
           <div key={field}>
             <label className="text-xs font-medium text-muted-foreground mb-1 block">{label}</label>
@@ -340,6 +395,21 @@ export default function ResumeBuilder() {
             />
           </div>
         </div>
+        {/* Photo position selector */}
+        {resumeData.personalInfo.photo && (
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Photo Position</label>
+            <select
+              value={resumeData.personalInfo.photoPosition ?? 'center'}
+              onChange={e => updatePersonal('photoPosition', e.target.value)}
+              className="h-8 w-full text-sm rounded-md border border-border bg-background px-2 focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        )}
       </div>
     </SectionCard>
   );
@@ -399,6 +469,7 @@ export default function ResumeBuilder() {
               <Input placeholder="Position" value={exp.position} onChange={(e) => updateExperience(exp.id, 'position', e.target.value)} className="h-8 text-sm" />
               <Input placeholder="Start (e.g. Jan 2022)" value={exp.startDate} onChange={(e) => updateExperience(exp.id, 'startDate', e.target.value)} className="h-8 text-sm" />
               <Input placeholder="End (or Present)" value={exp.endDate} onChange={(e) => updateExperience(exp.id, 'endDate', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="Experience Link (optional)" value={exp.link ?? ''} onChange={(e) => updateExperience(exp.id, 'link', e.target.value)} className="h-8 text-sm" />
             </div>
             <Textarea
               placeholder="• Led a team of 5 engineers to ship..."
@@ -448,6 +519,7 @@ export default function ResumeBuilder() {
                 <Input placeholder="Start" value={edu.startDate} onChange={(e) => updateEducation(edu.id, 'startDate', e.target.value)} className="h-8 text-sm" />
                 <Input placeholder="End" value={edu.endDate} onChange={(e) => updateEducation(edu.id, 'endDate', e.target.value)} className="h-8 text-sm" />
               </div>
+              <Input placeholder="Education Link (optional)" value={edu.link ?? ''} onChange={(e) => updateEducation(edu.id, 'link', e.target.value)} className="h-8 text-sm" />
             </div>
             <Button variant="ghost" size="sm" className="text-destructive text-xs h-7" onClick={() => removeEducation(edu.id)}>
               <Trash2 className="h-3 w-3 mr-1" /> Remove
@@ -494,6 +566,48 @@ export default function ResumeBuilder() {
     </SectionCard>
   );
 
+  const renderExtracurricular = () => (
+    <SectionCard
+      id="extracurricular"
+      icon={Sparkles}
+      label="Extracurricular"
+      expanded={expandedSections.extracurricular}
+      onToggle={() => toggleSection('extracurricular')}
+      action={<Button variant="outline" size="sm" onClick={addExtracurricular} className="h-7 text-xs"><Plus className="h-3 w-3 mr-1" />Add</Button>}
+    >
+      {(resumeData.extracurricular ?? []).length === 0 ? (
+        <div className="py-6 text-center text-muted-foreground text-xs">No extracurricular activities yet. Click "Add" to add one.</div>
+      ) : (
+        (resumeData.extracurricular ?? []).map((ec) => (
+          <div key={ec.id} id={`extracurricular-${ec.id}`} className="rounded-xl border border-border bg-background p-4 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Input placeholder="Activity Title" value={ec.title} onChange={(e) => updateExtracurricular(ec.id, 'title', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="Organization" value={ec.organization} onChange={(e) => updateExtracurricular(ec.id, 'organization', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="Your Role" value={ec.role} onChange={(e) => updateExtracurricular(ec.id, 'role', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="Activity Link (optional)" value={ec.link ?? ''} onChange={(e) => updateExtracurricular(ec.id, 'link', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="Start (e.g. Jan 2022)" value={ec.startDate} onChange={(e) => updateExtracurricular(ec.id, 'startDate', e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="End (or Present)" value={ec.endDate} onChange={(e) => updateExtracurricular(ec.id, 'endDate', e.target.value)} className="h-8 text-sm" />
+            </div>
+            <Textarea
+              placeholder="• Organized annual fundraising event...\n• Led volunteer coordination initiative"
+              value={ec.description}
+              onChange={(e) => updateExtracurricular(ec.id, 'description', e.target.value)}
+              rows={3}
+              className="resize-none text-sm"
+            />
+            {ec.description && (
+              <AIPromptBox currentText={ec.description} sectionLabel={ec.title || 'Extracurricular'}
+                onApply={(text) => updateExtracurricular(ec.id, 'description', text)} />
+            )}
+            <Button variant="ghost" size="sm" className="text-destructive text-xs h-7" onClick={() => removeExtracurricular(ec.id)}>
+              <Trash2 className="h-3 w-3 mr-1" /> Remove
+            </Button>
+          </div>
+        ))
+      )}
+    </SectionCard>
+  );
+
   const renderProjects = () => (
     <SectionCard
       id="projects"
@@ -512,6 +626,7 @@ export default function ResumeBuilder() {
               <Input placeholder="Project Name" value={pr.name} onChange={e => updateProject(pr.id, 'name', e.target.value)} className="h-8 text-sm" />
               <Input placeholder="Your Role" value={pr.role} onChange={e => updateProject(pr.id, 'role', e.target.value)} className="h-8 text-sm" />
               <Input placeholder="Project URL (optional)" value={pr.url} onChange={e => updateProject(pr.id, 'url', e.target.value)} className="h-8 text-sm col-span-1 sm:col-span-2" />
+              <Input placeholder="Project Link (optional)" value={pr.link ?? ''} onChange={e => updateProject(pr.id, 'link', e.target.value)} className="h-8 text-sm col-span-1 sm:col-span-2" />
               <Input placeholder="Start (e.g. Jan 2023)" value={pr.startDate} onChange={e => updateProject(pr.id, 'startDate', e.target.value)} className="h-8 text-sm" />
               <Input placeholder="End (or Present)" value={pr.endDate} onChange={e => updateProject(pr.id, 'endDate', e.target.value)} className="h-8 text-sm" />
             </div>
@@ -540,6 +655,7 @@ export default function ResumeBuilder() {
     experience: renderExperience,
     projects: renderProjects,
     education: renderEducation,
+    extracurricular: renderExtracurricular,
     skills: renderSkills,
   };
 
@@ -547,17 +663,17 @@ export default function ResumeBuilder() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* ── Header ── */}
-      <header className="h-14 shrink-0 border-b border-border bg-card flex items-center px-4 gap-3 sticky top-0 z-30 shadow-sm">
-        <Link to="/dashboard" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors">
-          <ChevronLeft className="h-4 w-4" /> Back
+      <header className="h-14 shrink-0 border-b border-border bg-card flex items-center px-3 gap-2 sticky top-0 z-30 shadow-sm overflow-x-auto">
+        <Link to="/dashboard" className="flex items-center gap-1 text-xs sm:text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0">
+          <ChevronLeft className="h-4 w-4" /> <span className="hidden sm:inline">Back</span>
         </Link>
-        <span className="font-bold text-sm gradient-text">ResumeForge</span>
-        <div className="flex-1" />
+        <span className="font-bold text-xs sm:text-sm gradient-text">ResumeForge</span>
+        <div className="flex-1 min-w-1" />
 
         {/* Template name badge */}
         <button
           onClick={() => setShowTemplateSwitcher(true)}
-          className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:border-primary/40 hover:bg-primary/5 transition-all"
+          className="hidden md:flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium border border-border hover:border-primary/40 hover:bg-primary/5 transition-all shrink-0"
         >
           <Layout className="h-3.5 w-3.5 text-primary" />
           <span>{currentTemplate.name}</span>
@@ -569,9 +685,9 @@ export default function ResumeBuilder() {
           variant={showGlobalAI ? 'default' : 'outline'}
           size="sm"
           onClick={() => setShowGlobalAI((p) => !p)}
-          className={`gap-1.5 text-xs h-8 ${showGlobalAI ? 'gradient-bg border-0' : ''}`}
+          className={`gap-1 text-xs h-8 px-2 md:px-3 shrink-0 ${showGlobalAI ? 'gradient-bg border-0' : ''}`}
         >
-          <Sparkles className="h-3.5 w-3.5" /> AI
+          <Sparkles className="h-3.5 w-3.5" /> <span className="hidden sm:inline">AI</span>
         </Button>
 
         {/* Auto-save indicator */}
@@ -581,7 +697,7 @@ export default function ResumeBuilder() {
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              className={`hidden sm:flex items-center gap-1 text-xs ${autoSaveStatus === 'saving' ? 'text-muted-foreground' : 'text-emerald-500'
+              className={`hidden sm:flex items-center gap-1 text-xs shrink-0 ${autoSaveStatus === 'saving' ? 'text-muted-foreground' : 'text-emerald-500'
                 }`}
             >
               {autoSaveStatus === 'saving' ? (
@@ -594,9 +710,9 @@ export default function ResumeBuilder() {
         </AnimatePresence>
 
         {/* Save */}
-        <Button variant="outline" size="sm" onClick={handleSave} disabled={isSaving} className="gap-1.5 text-xs h-8">
+        <Button variant="outline" size="sm" onClick={handleSave} disabled={isSaving} className="gap-1 text-xs h-8 px-2 md:px-3 shrink-0">
           {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          {isSaving ? 'Saving…' : 'Save'}
+          <span className="hidden sm:inline">{isSaving ? 'Saving…' : 'Save'}</span>
         </Button>
 
         <ThemeToggle />
@@ -606,7 +722,7 @@ export default function ResumeBuilder() {
       <div className="flex flex-1 overflow-hidden">
 
         {/* ── LEFT: Form Panel ── */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:border-r border-border lg:max-w-[52%]">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:border-r border-border lg:max-w-[52%] pb-20 lg:pb-4">
 
           {/* Global AI prompt */}
           <AnimatePresence>
@@ -678,29 +794,40 @@ export default function ResumeBuilder() {
           </div>
 
           {/* Preview content */}
-          <div className="flex-1 p-6 flex justify-center">
-            <div className="w-full max-w-[680px]">
-              <ResumePreview
-                ref={previewRef}
-                data={resumeData}
-                templateId={selectedTemplate}
-                sectionOrder={sectionOrder}
-              />
+          <div className="flex-1 p-6 flex justify-center overflow-y-auto" ref={containerRef}>
+            <div className="relative">
+              <div
+                ref={previewInnerRef}
+                style={{
+                  width: 794,
+                  transformOrigin: 'top left',
+                  transform: `scale(${scale})`,
+                  boxShadow: '0 20px 50px -12px rgba(0,0,0,0.15)',
+                  borderRadius: '4px',
+                }}
+              >
+                <ResumePreview
+                  ref={previewRef}
+                  data={resumeData}
+                  templateId={selectedTemplate}
+                  sectionOrder={sectionOrder}
+                />
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       {/* ── Mobile Preview / Export tab ── */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-border bg-card/95 backdrop-blur-sm p-3 flex gap-2 z-20">
-        <Button variant="outline" size="sm" onClick={() => setShowTemplateSwitcher(true)} className="flex-1 gap-1 text-xs">
-          <Layout className="h-3.5 w-3.5" /> Templates
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-border bg-card/95 backdrop-blur-sm p-2 flex gap-2 z-20 safe-area-inset-bottom">
+        <Button variant="outline" size="sm" onClick={() => setShowTemplateSwitcher(true)} className="flex-1 gap-1 text-xs h-9 touch-target-min" title="Switch resume template">
+          <Layout className="h-3.5 w-3.5" /> <span className="hidden xs:inline">Templates</span>
         </Button>
-        <Button variant="outline" size="sm" onClick={handleExportPNG} disabled={exportLoading !== null} className="gap-1 text-xs">
-          {exportLoading === 'png' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Image className="h-3 w-3" />} PNG
+        <Button variant="outline" size="sm" onClick={handleExportPNG} disabled={exportLoading !== null} className="gap-1 text-xs h-9 touch-target-min" title="Export as PNG">
+          {exportLoading === 'png' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Image className="h-3 w-3" />} <span className="hidden xs:inline">PNG</span>
         </Button>
-        <Button size="sm" onClick={handleExportPDF} disabled={exportLoading !== null} className="gradient-bg border-0 gap-1 text-xs">
-          {exportLoading === 'pdf' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} PDF
+        <Button size="sm" onClick={handleExportPDF} disabled={exportLoading !== null} className="gradient-bg border-0 gap-1 text-xs h-9 touch-target-min" title="Export as PDF">
+          {exportLoading === 'pdf' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} <span className="hidden xs:inline">PDF</span>
         </Button>
       </div>
 

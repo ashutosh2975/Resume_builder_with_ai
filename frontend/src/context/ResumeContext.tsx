@@ -10,6 +10,7 @@ export interface Education {
   field: string;
   startDate: string;
   endDate: string;
+  link?: string;
 }
 
 export interface Experience {
@@ -19,6 +20,7 @@ export interface Experience {
   startDate: string;
   endDate: string;
   description: string;
+  link?: string;
 }
 
 export interface Project {
@@ -29,6 +31,25 @@ export interface Project {
   startDate: string;
   endDate: string;
   description: string;
+  link?: string;
+}
+
+export interface Extracurricular {
+  id: string;
+  title: string;
+  organization: string;
+  role: string;
+  startDate: string;
+  endDate: string;
+  description: string;
+  link?: string;
+}
+
+export interface Certification {
+  name: string;
+  issuer: string;
+  date?: string;
+  link?: string;
 }
 
 export interface ResumeData {
@@ -40,15 +61,19 @@ export interface ResumeData {
     title: string;
     website: string;
     linkedin: string;
+    github?: string;
+    portfolio?: string;
     photo: string; // base64 or URL
+    photoPosition?: 'left' | 'center' | 'right'; // Position of photo
   };
   summary: string;
   education: Education[];
   experience: Experience[];
   projects: Project[];
+  extracurricular: Extracurricular[];
   skills: string[];
   languages: string[];
-  certifications: string[];
+  certifications: (string | Certification)[];
 }
 
 export interface SavedResume {
@@ -84,17 +109,19 @@ export const defaultResume: ResumeData = {
   personalInfo: {
     fullName: "", email: "", phone: "", location: "",
     title: "", website: "", linkedin: "", photo: "",
+    github: "", portfolio: "", photoPosition: "center",
   },
   summary: "",
   education: [],
   experience: [],
   projects: [],
+  extracurricular: [],
   skills: [],
   languages: [],
   certifications: [],
 };
 
-const DEFAULT_SECTION_ORDER = ["summary", "experience", "projects", "education", "skills"];
+const DEFAULT_SECTION_ORDER = ["summary", "experience", "projects", "education", "extracurricular", "skills"];
 const DEFAULT_TEMPLATE = "modern-01";
 const API_BASE = "http://localhost:5000/api";
 

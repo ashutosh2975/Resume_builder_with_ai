@@ -26,16 +26,22 @@ Resume_builder/
 
 ### 1 — Backend (Flask)
 
+You **must** have the Flask API running for the frontend to work. Keep this terminal open while you're developing.
+
 ```bash
 cd backend
 
-# Windows shortcut:
+# Windows shortcut (recommended – it also installs deps):
 start.bat
 
 # Or manually:
-pip install -r requirements.txt
-python app.py
+pip install -r requirements.txt     # install if not done already
+python app.py                       # launches server on http://localhost:5000
 ```
+
+If you see `Unable to contact backend API` in the browser, or the login page
+shows a warning about the server, it means this step wasn't completed or the
+process has exited. Run the command again and watch the console for errors.
 
 > **No PostgreSQL?** No problem — the backend automatically uses a local **SQLite** file (`resume_builder.db`) when `DATABASE_URL` is not set. Perfect for local development.
 
@@ -63,7 +69,7 @@ App runs on **http://localhost:5173**
 | `/dashboard` | 🔒 Protected | Manage your resumes |
 | `/builder` | 🔒 Protected | Resume editor |
 | `/select-template` | 🔒 Protected | Choose a template |
-| `/upload` | 🔒 Protected | Upload an existing resume |
+| `/upload` | 🔒 Protected | Upload and extract existing resume |
 
 Protected routes automatically redirect to `/login` if you're not signed in, then return you to the original page after authentication.
 
@@ -80,17 +86,46 @@ Protected routes automatically redirect to `/login` if you're not signed in, the
 
 ---
 
+## Resume Extraction Features
+
+The app provides **intelligent resume extraction** from uploaded files using Gemini AI with automatic fallback:
+
+```
+Upload Resume (PDF/DOCX/TXT)
+    ↓
+[Attempt 1: Gemini AI Extraction] → ~90% accuracy
+    ↓ (if fails)
+[Attempt 2: Manual Extraction] → Regex-based fallback
+    ↓
+Review extracted data
+    ↓
+Choose template
+    ↓
+Edit in builder
+```
+
+**Extraction Method Indicator**: Frontend shows whether extraction was done via **AI (🤖)** or **Manual (⚡)** so you know the confidence level.
+
+---
+
 ## Environment Variables
 
 ### Backend (`backend/.env`)
 
 ```env
-# SQLite (default — leave commented for local dev):
-# DATABASE_URL=postgresql://user:pass@localhost:5432/resume_builder
+# Database
+DATABASE_URL=postgresql://user:pass@localhost:5432/resume_builder  # Optional, uses SQLite if not set
 
-# JWT secret — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+# Authentication
 JWT_SECRET_KEY=your-secret-here
 
+# Resume Extraction & AI Enhancements
+GEMINI_API_KEY=your-gemini-api-key  # For resume extraction (required for AI extraction)
+OPENAI_API_KEY=your-openai-key      # Optional fallback
+DEEPSEEK_API_KEY=your-deepseek-key  # Optional fallback
+GROQ_API_KEY=your-groq-key          # Optional fallback
+
+# Environment
 FLASK_ENV=development
 FLASK_DEBUG=1
 ```
