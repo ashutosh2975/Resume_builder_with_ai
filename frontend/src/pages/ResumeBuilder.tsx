@@ -21,6 +21,9 @@ import { enhanceText, type AIMode } from '@/lib/aiEnhance';
 import { getTemplate } from '@/data/templates';
 import { toast } from 'sonner';
 
+// ─── API Configuration ────────────────────────────────────────────────────────
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
 // ─── Country Codes ─────────────────────────────────────────────────────────────
 const COUNTRY_CODES = [
   { code: '+1', flag: '🇺🇸', label: 'US/CA' },
@@ -992,7 +995,7 @@ function UniversityAutocomplete({ value, onChange }: { value: string; onChange: 
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
       try {
-        const res = await fetch(`http://localhost:5000/api/universities?q=${encodeURIComponent(value)}`);
+        const res = await fetch(`${API_BASE}/universities?q=${encodeURIComponent(value)}`);
         if (res.ok) {
           const data = await res.json();
           setResults(data.universities ?? []);

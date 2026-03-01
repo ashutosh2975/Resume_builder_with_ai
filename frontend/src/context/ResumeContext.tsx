@@ -123,7 +123,7 @@ export const defaultResume: ResumeData = {
 
 const DEFAULT_SECTION_ORDER = ["summary", "experience", "projects", "education", "extracurricular", "skills"];
 const DEFAULT_TEMPLATE = "modern-01";
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
 
 // ─── Context ───────────────────────────────────────────────────────────────────
 

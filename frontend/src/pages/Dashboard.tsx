@@ -10,6 +10,8 @@ import { ResumePreview } from '@/components/resume/ResumePreview';
 import { downloadPDF, downloadPNG } from '@/lib/exportUtils';
 import { toast } from 'sonner';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
 const Dashboard = () => {
   const {
     savedResumes, setResumeData, setSelectedTemplate,
@@ -40,7 +42,7 @@ const Dashboard = () => {
 
     // Load full data from backend if we have a token
     try {
-      const res = await fetch(`http://localhost:5000/api/resumes/${id}`, {
+      const res = await fetch(`${API_BASE}/resumes/${id}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('rf_token')}` }
       });
       if (res.ok) {

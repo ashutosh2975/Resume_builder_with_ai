@@ -3,6 +3,8 @@ import jsPDF from 'jspdf';
 import type { RefObject } from 'react';
 import type { ResumeData } from '@/context/ResumeContext';
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
 export type ExportQuality = 'low' | 'medium' | 'high';
 
 interface QualityOption {
@@ -27,7 +29,7 @@ export async function getResumeHTML(
   templateConfig: Record<string, any>
 ): Promise<string> {
   try {
-    const response = await fetch('http://localhost:5000/api/export/render-html', {
+    const response = await fetch(`${API_BASE}/export/render-html`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resume: resumeData, template: templateConfig }),
